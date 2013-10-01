@@ -1,0 +1,10 @@
+
+pcm.plugufoleds {
+  type ufoleds
+  slave.pcm "default"
+}
+
+pcm.ufoleds {
+  type plug
+  slave.pcm plugufoleds
+}
