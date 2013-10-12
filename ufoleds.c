@@ -46,11 +46,11 @@ typedef struct snd_pcm_ufoleds {
 } snd_pcm_ufoleds_t;
 
 static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
-										  const snd_pcm_channel_area_t *dst_areas,
-										  snd_pcm_uframes_t dst_offset,
-										  const snd_pcm_channel_area_t *src_areas,
-										  snd_pcm_uframes_t src_offset,
-										  snd_pcm_uframes_t size)
+                                          const snd_pcm_channel_area_t *dst_areas,
+                                          snd_pcm_uframes_t dst_offset,
+                                          const snd_pcm_channel_area_t *src_areas,
+                                          snd_pcm_uframes_t src_offset,
+                                          snd_pcm_uframes_t size)
 {
   snd_pcm_ufoleds_t *ufoleds = ext->private_data;
   gint16 *src, *dst;
@@ -66,9 +66,9 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
   //SNDERR("size: %d", size);
 
   src = (gint16*)(src_areas->addr +
-				(src_areas->first + src_areas->step * src_offset)/8);
+                  (src_areas->first + src_areas->step * src_offset)/8);
   dst = (gint16*)(dst_areas->addr +
-				(dst_areas->first + dst_areas->step * dst_offset)/8);	
+                  (dst_areas->first + dst_areas->step * dst_offset)/8);
 
   /* Copy data onwards */
   memcpy(dst, src, size * sizeof(gint16) * ch);
@@ -80,19 +80,19 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
     for (i = 0; i < size; i++) {
       v = 0;
       for (c = 0; c < ch; c++) {
-		  v += src[s++];
+        v += src[s++];
       }
 
-	  /* Ignore extra data in case of buffer overflow */
-	  if (adata_i >= sizeof(adata)) {
-		break;
-	  }
-	  adata[adata_i++] = v / ch;
+      /* Ignore extra data in case of buffer overflow */
+      if (adata_i >= sizeof(adata)) {
+        break;
+      }
+      adata[adata_i++] = v / ch;
     }
   }
 
   if (adata_i < ufoleds->req_spf) {
-	return size;
+    return size;
   }
 
   /* Run fft */
@@ -105,11 +105,11 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
 
   /* Calculate the "power" of the audio samples, ignore higher hal */
   for (x = 0; x < (ufoleds->num_freq - 1)/2; x++) {
-	gfloat booster;
+    gfloat booster;
     fr = (gfloat)fdata[1 + x].r / 512.0;
     fi = (gfloat)fdata[1 + x].i / 512.0;
-	booster = ufoleds->num_freq - x;
-	sum += fabs(fr * fr + fi * fi) * booster;
+    booster = ufoleds->num_freq - x;
+    sum += fabs(fr * fr + fi * fi) * booster;
   }
 
   /* Slowly decrease the seen maximum */
@@ -117,7 +117,7 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
 
   /* Check for new maximum */
   if (sum > ufoleds->max_sum) {
-	ufoleds->max_sum = sum;
+    ufoleds->max_sum = sum;
   }
 
   /* Scale to 0-10 for 10 steps */
@@ -127,18 +127,18 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
   //SNDERR("sum: %f", sum);
 
   if (ufoleds->fd > -1) {
-	char buf[8] = "G0000\r\n\0";
-	int x;
+    char buf[8] = "G0000\r\n\0";
+    int x;
 
-	for(x = 1; x < 5; ++x) {
-	  if (x < sum) {
-		buf[x] = '1';
-	  }
-	}
-	write(ufoleds->fd, buf, sizeof(buf) - 1);
-	//SNDERR("%s", buf);
+    for(x = 1; x < 5; ++x) {
+      if (x < sum) {
+        buf[x] = '1';
+      }
+    }
+    write(ufoleds->fd, buf, sizeof(buf) - 1);
+    //SNDERR("%s", buf);
   } else {
-	//SNDERR("NO FD OPEN");
+    //SNDERR("NO FD OPEN");
   }
 
   return size;
@@ -150,8 +150,8 @@ static int ufoleds_close(snd_pcm_extplug_t *ext) {
   SNDERR("Closing");
 
   if (ufoleds->fd > -1) {
-	char buf[8] = "G0000\r\n";
-	write(ufoleds->fd, buf, sizeof(buf));
+    char buf[8] = "G0000\r\n";
+    write(ufoleds->fd, buf, sizeof(buf));
   }
 
   if (ufoleds->fft_ctx) {
@@ -165,8 +165,8 @@ static int ufoleds_close(snd_pcm_extplug_t *ext) {
   }
 
   if (ufoleds->fd > -1) {
-	close(ufoleds->fd);
-	ufoleds->fd = -1;
+    close(ufoleds->fd);
+    ufoleds->fd = -1;
   }
 
   free(ufoleds);
@@ -190,26 +190,26 @@ static int ufoleds_init(snd_pcm_extplug_t *ext)
   ufoleds->max_sum = 0;
 
   if (ufoleds->fd == -1) {
-	int i;
-	ufoleds->fd = open_serial_port("/dev/ttyUSB0");
-	if (ufoleds->fd == -1) {
-	  SNDERR("open_serial_port() failed");
-	  return 0;
-	}
+    int i;
+    ufoleds->fd = open_serial_port("/dev/ttyUSB0");
+    if (ufoleds->fd == -1) {
+      SNDERR("open_serial_port() failed");
+      return 0;
+    }
 
-	for (i = 1; i < 5; i++) {
-	  char buf[8] = "G0000\r\n";
-	  if (i > 1)
-		buf[i - 1] = '0';
-	  buf[i] = '1';
-	  write(ufoleds->fd, buf, sizeof(buf));
-	  usleep(200*1000);
-	}
+    for (i = 1; i < 5; i++) {
+      char buf[8] = "G0000\r\n";
+      if (i > 1)
+        buf[i - 1] = '0';
+      buf[i] = '1';
+      write(ufoleds->fd, buf, sizeof(buf));
+      usleep(200*1000);
+    }
 
-	{
-	  char buf[8] = "G0000\r\n";
-	  write(ufoleds->fd, buf, sizeof(buf));
-	}
+    {
+      char buf[8] = "G0000\r\n";
+      write(ufoleds->fd, buf, sizeof(buf));
+    }
   }
 
   return 0;
@@ -272,31 +272,31 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ufoleds)
 	
   /* Parse configuration options from asoundrc */
   snd_config_for_each(i, next, conf) {
-	snd_config_t *n = snd_config_iterator_entry(i);
-	const char *id;
-	if (snd_config_get_id(n, &id) < 0)
-	  continue;
-	if (strcmp(id, "comment") == 0 || strcmp(id, "type") == 0 || strcmp(id, "hint") == 0)
-	  continue;
-	if (strcmp(id, "slave") == 0) {
-	  sconf = n;
-	  continue;
-	}
+    snd_config_t *n = snd_config_iterator_entry(i);
+    const char *id;
+    if (snd_config_get_id(n, &id) < 0)
+      continue;
+    if (strcmp(id, "comment") == 0 || strcmp(id, "type") == 0 || strcmp(id, "hint") == 0)
+      continue;
+    if (strcmp(id, "slave") == 0) {
+      sconf = n;
+      continue;
+    }
 
-	SNDERR("Unknown field %s", id);
-	return -EINVAL;
+    SNDERR("Unknown field %s", id);
+    return -EINVAL;
   }
 
   /* Make sure we have a slave and control devices defined */
   if (!sconf) {
-	SNDERR("No slave configuration for UFO LEDs");
-	return -EINVAL;
+    SNDERR("No slave configuration for UFO LEDs");
+    return -EINVAL;
   }
 
   /* Intialize the local object data */
   ufoleds = calloc(1, sizeof(*ufoleds));
   if (ufoleds == NULL)
-	return -ENOMEM;
+    return -ENOMEM;
 
   ufoleds->fd = -1;
   ufoleds->ext.version = SND_PCM_EXTPLUG_VERSION;
@@ -307,8 +307,8 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ufoleds)
   /* Create the ALSA External Plugin */
   err = snd_pcm_extplug_create(&ufoleds->ext, name, root, sconf, stream, mode);
   if (err < 0) {
-	SNDERR("snd_pcm_extplug_create() failed");
-	return err;
+    SNDERR("snd_pcm_extplug_create() failed");
+    return err;
   }
 
   /* Set PCM Contraints */
@@ -326,3 +326,11 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ufoleds)
 
 SND_PCM_PLUGIN_SYMBOL(ufoleds);
 
+
+/* Emacs indentatation information
+   Local Variables:
+   indent-tabs-mode:nil
+   tab-width:2
+   c-basic-offset:2
+   End:
+*/
