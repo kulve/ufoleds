@@ -26,6 +26,14 @@
 #include <alsa/asoundlib.h>
 #include <alsa/pcm_external.h>
 #include <gst/fft/gstffts16.h>
+#include <termios.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+
+int open_serial_port(const char *port);
 
 typedef struct snd_pcm_ufoleds {
   snd_pcm_extplug_t ext;
@@ -33,7 +41,8 @@ typedef struct snd_pcm_ufoleds {
   GstFFTS16Complex *freq_data;
   int req_spf;
   guint num_freq;
-
+  int fd;
+  float max_sum;
 } snd_pcm_ufoleds_t;
 
 static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
@@ -48,13 +57,11 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
   const guint ch = 2;
   static gint16 adata[16483];
   static int adata_i = 0;
-  static float max_sum = 0;
   GstFFTS16Complex *fdata = ufoleds->freq_data;
 
-  guint x, y;
+  guint x;
   gfloat fr, fi;
   gfloat sum = 0;
-  char foo[12];
 
   //SNDERR("size: %d", size);
 
@@ -73,7 +80,7 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
     for (i = 0; i < size; i++) {
       v = 0;
       for (c = 0; c < ch; c++) {
-        v += src[s++];
+		  v += src[s++];
       }
 
 	  /* Ignore extra data in case of buffer overflow */
@@ -96,38 +103,56 @@ static snd_pcm_sframes_t ufoleds_transfer(snd_pcm_extplug_t *ext,
   memcpy(adata, &adata[ufoleds->req_spf], sizeof(gint16) * (adata_i - ufoleds->req_spf));
   adata_i = 0;
 
-  /* Calculate integral of the frequencies or whatnot */
-  for (x = 0; x < ufoleds->num_freq - 1; x++) {
+  /* Calculate the "power" of the audio samples, ignore higher hal */
+  for (x = 0; x < (ufoleds->num_freq - 1)/2; x++) {
+	gfloat booster;
     fr = (gfloat)fdata[1 + x].r / 512.0;
     fi = (gfloat)fdata[1 + x].i / 512.0;
-    sum += fabs(fr * fr + fi * fi) * ((ufoleds->num_freq - x) / (float)(ufoleds->num_freq));
-
+	booster = ufoleds->num_freq - x;
+	sum += fabs(fr * fr + fi * fi) * booster;
   }
-  SNDERR("sum: %f", sum);
 
   /* Slowly decrease the seen maximum */
-  max_sum -= 0.01;
+  ufoleds->max_sum -= 0.01;
 
   /* Check for new maximum */
-  if (sum > max_sum) {
-	max_sum = sum;
+  if (sum > ufoleds->max_sum) {
+	ufoleds->max_sum = sum;
   }
 
   /* Scale to 0-10 for 10 steps */
-  sum /= max_sum;
-  sum *= 10;
+  sum /= ufoleds->max_sum;
+  sum *= 7;
 
-  for (x = 0; x < sum; ++x) {
-	foo[x] = '*';
+  //SNDERR("sum: %f", sum);
+
+  if (ufoleds->fd > -1) {
+	char buf[8] = "G0000\r\n\0";
+	int x;
+
+	for(x = 1; x < 5; ++x) {
+	  if (x < sum) {
+		buf[x] = '1';
+	  }
+	}
+	write(ufoleds->fd, buf, sizeof(buf) - 1);
+	//SNDERR("%s", buf);
+  } else {
+	//SNDERR("NO FD OPEN");
   }
-  foo[x] = '\0';
-  SNDERR("%s", foo);
 
   return size;
 }
 
 static int ufoleds_close(snd_pcm_extplug_t *ext) {
   snd_pcm_ufoleds_t *ufoleds = ext->private_data;
+
+  SNDERR("Closing");
+
+  if (ufoleds->fd > -1) {
+	char buf[8] = "G0000\r\n";
+	write(ufoleds->fd, buf, sizeof(buf));
+  }
 
   if (ufoleds->fft_ctx) {
     gst_fft_s16_free (ufoleds->fft_ctx);
@@ -139,6 +164,11 @@ static int ufoleds_close(snd_pcm_extplug_t *ext) {
     ufoleds->freq_data = NULL;
   }
 
+  if (ufoleds->fd > -1) {
+	close(ufoleds->fd);
+	ufoleds->fd = -1;
+  }
+
   free(ufoleds);
   return 0;
 }
@@ -147,13 +177,40 @@ static int ufoleds_init(snd_pcm_extplug_t *ext)
 {
   snd_pcm_ufoleds_t *ufoleds = ext->private_data;
 
+  SNDERR("Initialisating");
+
   /* Counted so that ufoleds->req_spf is ~1024 and matches gst_fft_next_fast_length() */
-  ufoleds->num_freq = 540;
+  ufoleds->num_freq = 541;
 
   /* we'd need this amount of samples per render() call */
   ufoleds->req_spf = ufoleds->num_freq * 2 - 2; // 1080
   ufoleds->fft_ctx = gst_fft_s16_new(ufoleds->req_spf, FALSE);
   ufoleds->freq_data = g_new(GstFFTS16Complex, ufoleds->num_freq);
+
+  ufoleds->max_sum = 0;
+
+  if (ufoleds->fd == -1) {
+	int i;
+	ufoleds->fd = open_serial_port("/dev/ttyUSB0");
+	if (ufoleds->fd == -1) {
+	  SNDERR("open_serial_port() failed");
+	  return 0;
+	}
+
+	for (i = 1; i < 5; i++) {
+	  char buf[8] = "G0000\r\n";
+	  if (i > 1)
+		buf[i - 1] = '0';
+	  buf[i] = '1';
+	  write(ufoleds->fd, buf, sizeof(buf));
+	  usleep(200*1000);
+	}
+
+	{
+	  char buf[8] = "G0000\r\n";
+	  write(ufoleds->fd, buf, sizeof(buf));
+	}
+  }
 
   return 0;
 }
@@ -163,6 +220,48 @@ static snd_pcm_extplug_callback_t ufoleds_callback = {
   .init = ufoleds_init,
   .close = ufoleds_close,
 };
+
+
+/*
+ * Open a serial device
+ */
+int open_serial_port(const char *port)
+{
+  int serialFD;
+  struct termios newtio;
+
+  // Open device
+  serialFD = open(port, O_RDWR | O_NOCTTY | O_NONBLOCK);
+  if (serialFD < 0) {
+    SNDERR("Failed to open Control Board device %s: %s", port, strerror(errno));
+    return -1;
+  }
+
+  // clear struct for new port settings
+  bzero(&newtio, sizeof(newtio));
+
+  // control mode flags
+  newtio.c_cflag = CS8 | CLOCAL | CREAD;
+
+  // input mode flags
+  newtio.c_iflag = 0;
+
+  // output mode flags
+  newtio.c_oflag = 0;
+
+  // local mode flags
+  newtio.c_lflag = 0;
+
+  // set input/output speeds
+  cfsetispeed(&newtio, B115200);
+  cfsetospeed(&newtio, B115200);
+
+  // now clean the serial line and activate the settings
+  tcflush(serialFD, TCIFLUSH);
+  tcsetattr(serialFD, TCSANOW, &newtio);
+
+  return serialFD;
+}
 
 SND_PCM_PLUGIN_DEFINE_FUNC(ufoleds)
 {
@@ -199,6 +298,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(ufoleds)
   if (ufoleds == NULL)
 	return -ENOMEM;
 
+  ufoleds->fd = -1;
   ufoleds->ext.version = SND_PCM_EXTPLUG_VERSION;
   ufoleds->ext.name = "UFO LEDs Plugin";
   ufoleds->ext.callback = &ufoleds_callback;
